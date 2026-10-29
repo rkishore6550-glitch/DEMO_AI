@@ -32,6 +32,11 @@ body{margin:0;padding:1.5rem 1rem 3rem;background:var(--color-bg);color:var(--co
 .cd-srcbar.cd-warn{color:var(--color-bad)}
 .cd-srcbar button{font:inherit;font-size:.8125rem;color:var(--color-fg);background:var(--color-panel);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:.35rem .8rem;cursor:pointer}
 .cd-srcbar button:disabled{opacity:.6;cursor:default}
+.cd .cd-filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:.75rem 1rem;padding:.75rem 1rem;border:1px solid var(--color-border-line);border-radius:var(--cds-radius);background:var(--color-panel)}
+.cd .cd-filters label{display:flex;flex-direction:column;gap:.25rem;font-size:.75rem;color:var(--color-fg-muted)}
+.cd .cd-filters select{font:inherit;font-size:.875rem;color:var(--color-fg);background:var(--color-bg);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:.35rem .5rem;min-width:9rem;max-width:16rem}
+.cd .cd-fstatus{font-size:.8125rem;color:var(--color-fg-muted);margin-left:auto;align-self:center}
+.cd .cd-filters button{font:inherit;font-size:.8125rem;color:var(--color-fg);background:var(--color-bg);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:.35rem .8rem;cursor:pointer;align-self:center}
 
 
 .cd{display:flex;flex-direction:column;gap:var(--cds-gap-lg);font-family:var(--font-anthropic-sans);color:var(--color-fg);max-width:78rem;margin-inline:auto;font-variant-numeric:tabular-nums}
@@ -93,6 +98,15 @@ body{margin:0;padding:1.5rem 1rem 3rem;background:var(--color-bg);color:var(--co
     The <span data-source="kpis" data-field="not_n" data-row="0" data-fmt="n">—</span> the AI did not connect are a separate flow.
   </p>
 </header>
+
+<div class="cd-filters" id="cd-filters">
+  <label>Month (lead created)<select id="f-month"></select></label>
+  <label>Partner type<select id="f-type"></select></label>
+  <label>Lead source<select id="f-source"></select></label>
+  <label>Assigned agent<select id="f-agent"></select></label>
+  <span class="cd-fstatus" id="f-status"></span>
+  <button type="button" id="f-clear" hidden>Clear filters</button>
+</div>
 
 <div class="cd-tabs" id="cd-tabs">
   <button type="button" data-tab="t1" aria-pressed="true">Flow</button>
@@ -483,6 +497,90 @@ const DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS2CqUO9J7niIF
   var url = (override || DATA_URL || '').trim();
   var lastLoaded = '';
 
+  // ---------------- filters ----------------
+  var allRows = [];
+  var started = false;
+  var F = { month: 'all', type: 'all', source: 'all', agent: 'all' };
+  function v(r, k) { var t = String(r[k] == null ? '' : r[k]).trim(); return t === '...' ? '' : t; }
+  function monthOf(r) { return v(r, 'lead_created_at').slice(0, 7); }
+  function typeOf(r) { return v(r, 'ap_tp_flag') || 'Unknown'; }
+  function sourceOf(r) { return v(r, 'data_source') || 'Unknown'; }
+  function agentOf(r) { return v(r, 'farming_agent_email').split('@')[0] || 'Unknown'; }
+  function readHash() {
+    location.hash.replace(/^#/, '').split('&').forEach(function (kv) {
+      var p = kv.split('=');
+      if (p.length === 2 && Object.prototype.hasOwnProperty.call(F, p[0])) F[p[0]] = decodeURIComponent(p[1]);
+    });
+  }
+  function writeHash() {
+    var parts = [];
+    Object.keys(F).forEach(function (k) { if (F[k] !== 'all') parts.push(k + '=' + encodeURIComponent(F[k])); });
+    try { history.replaceState(null, '', location.pathname + location.search + (parts.length ? '#' + parts.join('&') : '')); } catch (e) {}
+  }
+  function applyFilters(rows) {
+    return rows.filter(function (r) {
+      return (F.month === 'all' || monthOf(r) === F.month) && (F.type === 'all' || typeOf(r) === F.type) &&
+        (F.source === 'all' || sourceOf(r) === F.source) && (F.agent === 'all' || agentOf(r) === F.agent);
+    });
+  }
+  function uniq(rows, fn) {
+    var m = {};
+    rows.forEach(function (r) { var k = fn(r); if (k) m[k] = 1; });
+    return Object.keys(m).sort();
+  }
+  function monthLabel(ym) {
+    var p = ym.split('-');
+    if (p.length < 2) return ym;
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, 1)).toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+  }
+  function fillSelect(id, key, values, label) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    sel.replaceChildren();
+    var all = document.createElement('option'); all.value = 'all'; all.textContent = 'All'; sel.append(all);
+    values.forEach(function (val) {
+      var o = document.createElement('option'); o.value = val; o.textContent = label ? label(val) : val; sel.append(o);
+    });
+    if (F[key] !== 'all' && values.indexOf(F[key]) < 0) F[key] = 'all';
+    sel.value = F[key];
+  }
+  function buildFilters() {
+    fillSelect('f-month', 'month', uniq(allRows, monthOf), monthLabel);
+    fillSelect('f-type', 'type', uniq(allRows, typeOf));
+    fillSelect('f-source', 'source', uniq(allRows, sourceOf));
+    fillSelect('f-agent', 'agent', uniq(allRows, agentOf));
+  }
+  function updateStatus() {
+    var st = document.getElementById('f-status');
+    var clear = document.getElementById('f-clear');
+    var active = Object.keys(F).some(function (k) { return F[k] !== 'all'; });
+    if (st) st.textContent = 'Showing ' + sets.leads.length.toLocaleString('en-US') + ' of ' + allRows.length.toLocaleString('en-US') + ' leads';
+    if (clear) clear.hidden = !active;
+  }
+  function applyAndDraw() {
+    sets.leads = applyFilters(allRows);
+    writeHash();
+    updateStatus();
+    if (started) redraw();
+  }
+  function setRows(rows) {
+    allRows = rows;
+    buildFilters();
+    sets.leads = applyFilters(allRows);
+    updateStatus();
+  }
+  [['f-month', 'month'], ['f-type', 'type'], ['f-source', 'source'], ['f-agent', 'agent']].forEach(function (p) {
+    var sel = document.getElementById(p[0]);
+    if (sel) sel.addEventListener('change', function () { F[p[1]] = sel.value; applyAndDraw(); });
+  });
+  var clearBtn = document.getElementById('f-clear');
+  if (clearBtn) clearBtn.addEventListener('click', function () {
+    Object.keys(F).forEach(function (k) { F[k] = 'all'; });
+    buildFilters();
+    applyAndDraw();
+  });
+  readHash();
+
   function fetchRows() {
     return fetch(url, { cache: 'no-store' }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -505,7 +603,8 @@ const DATA_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS2CqUO9J7niIF
     if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
     say('Refreshing data from the published sheet…', false);
     fetchRows().then(function (objs) {
-      sets.leads = objs;
+      setRows(objs);
+      writeHash();
       redraw();
       lastLoaded = new Date().toLocaleString();
       say('Live data from the published sheet, ' + objs.length + ' leads, loaded ' + lastLoaded + '.', false);
@@ -972,21 +1071,23 @@ document.querySelectorAll('#cd-tabs button').forEach((b) => {
   }
 
   if (!url) {
-    sets.leads = snapshotRows();
+    setRows(snapshotRows());
     if (btn) btn.hidden = true;
     say('Showing the embedded snapshot from 28 Oct 2026.', false);
     start();
+    started = true;
   } else {
     if (btn) btn.disabled = true;
     fetchRows().then(function (objs) {
-      sets.leads = objs;
+      setRows(objs);
       lastLoaded = new Date().toLocaleString();
       say('Live data from the published sheet, ' + objs.length + ' leads, loaded ' + lastLoaded + '.', false);
     }).catch(function (e) {
-      sets.leads = snapshotRows();
+      setRows(snapshotRows());
       say('Could not read the published sheet (' + (e && e.message || e) + '). Showing the embedded snapshot from 28 Oct 2026 instead.', true);
     }).then(function () {
       start();
+      started = true;
       if (btn) btn.disabled = false;
     });
   }
